@@ -7,7 +7,7 @@
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    #map { height: 100vh; width: 100%; }
+    #map { height: 100vh; width: 100%; display: none; }
     .status {
       position: absolute;
       top: 10px; left: 10px;
@@ -16,103 +16,137 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.2);
       font-weight: bold;
     }
+    #usernameForm {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: white; padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      text-align: center;
+    }
+    #usernameForm input {
+      padding: 8px; width: 200px; font-size: 16px;
+    }
+    #usernameForm button {
+      padding: 8px 12px; font-size: 16px; margin-left: 5px;
+    }
   </style>
 </head>
 <body>
+
+<div id="usernameForm">
+  <h3>Enter your username</h3>
+  <input type="text" id="usernameInput" placeholder="Username" />
+  <button id="startBtn">Start</button>
+</div>
 
 <div id="map"></div>
 <div class="status" id="status">Connecting...</div>
 
 <script>
-// --- CONFIGURATION ---
-const geofenceCenter = [14.380439456531477, 120.87314190182668];
-const geofenceRadius = 100; // meters
-const userId = "User-" + Math.floor(Math.random() * 10000);
+let userId = null;
 
-// --- MAP INITIALIZATION ---
-const map = L.map('map').setView(geofenceCenter, 17);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 80 }).addTo(map);
+document.getElementById('startBtn').addEventListener('click', () => {
+  const input = document.getElementById('usernameInput').value.trim();
+  if (!input) {
+    alert("Please enter a username!");
+    return;
+  }
+  userId = input;
 
-// Draw geofence
-const circle = L.circle(geofenceCenter, {
-  radius: geofenceRadius,
-  color: 'blue',
-  fillColor: '#3f83f8',
-  fillOpacity: 0.3
-}).addTo(map);
-L.marker(geofenceCenter).addTo(map).bindPopup("Geofence Center");
+  // Hide form and show map
+  document.getElementById('usernameForm').style.display = 'none';
+  document.getElementById('map').style.display = 'block';
 
-// --- SOCKET CONNECTION ---
-const socket = io();
-const markers = {}; // store user markers
+  initMap();
+});
 
-// --- HELPER FUNCTION: Haversine Distance ---
-function getDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371e3;
-  const φ1 = lat1 * Math.PI/180;
-  const φ2 = lat2 * Math.PI/180;
-  const Δφ = (lat2 - lat1) * Math.PI/180;
-  const Δλ = (lon2 - lon1) * Math.PI/180;
-  const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
+function initMap() {
+  // --- CONFIGURATION ---
+  const geofenceCenter = [14.380439456531477, 120.87314190182668];
+  const geofenceRadius = 100; // meters
 
-// --- USER POSITION TRACKING ---
-let lastPosition = null;
+  // --- MAP INITIALIZATION ---
+  const map = L.map('map').setView(geofenceCenter, 17);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 80 }).addTo(map);
 
-// Poll GPS every second
-if (navigator.geolocation) {
-  setInterval(() => {
-    navigator.geolocation.getCurrentPosition(pos => {
-      const lat = pos.coords.latitude;
-      const lon = pos.coords.longitude;
-      const accuracy = pos.coords.accuracy;
+  // Draw geofence
+  const circle = L.circle(geofenceCenter, {
+    radius: geofenceRadius,
+    color: 'blue',
+    fillColor: '#3f83f8',
+    fillOpacity: 0.3
+  }).addTo(map);
+  L.marker(geofenceCenter).addTo(map).bindPopup("Geofence Center");
 
-      // Send update only if moved > 2 meters
-      const moved = !lastPosition || getDistance(lat, lon, lastPosition.lat, lastPosition.lon) > 2;
-      if (!moved) return;
-      lastPosition = { lat, lon };
+  // --- SOCKET CONNECTION ---
+  const socket = io();
+  const markers = {};
 
-      socket.emit('updateLocation', { id: userId, lat, lon, accuracy });
-    }, err => console.log("Location error:", err), { enableHighAccuracy: true });
-  }, 1000); // every 1 second
-} else {
-  alert("Geolocation not supported.");
-}
+  // --- HELPER FUNCTION: Haversine Distance ---
+  function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371e3;
+    const φ1 = lat1 * Math.PI/180;
+    const φ2 = lat2 * Math.PI/180;
+    const Δφ = (lat2 - lat1) * Math.PI/180;
+    const Δλ = (lon2 - lon1) * Math.PI/180;
+    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  }
 
-// --- RECEIVE OTHER USERS' LOCATIONS ---
-socket.on('userLocationUpdate', data => {
-  const { id, lat, lon, accuracy } = data;
-  const distance = getDistance(lat, lon, geofenceCenter[0], geofenceCenter[1]);
-  const inside = distance <= geofenceRadius;
+  // --- USER POSITION TRACKING ---
+  let lastPosition = null;
+  if (navigator.geolocation) {
+    setInterval(() => {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const accuracy = pos.coords.accuracy;
 
-  // Smooth marker movement
-  if (!markers[id]) {
-    markers[id] = L.marker([lat, lon]).addTo(map);
+        const moved = !lastPosition || getDistance(lat, lon, lastPosition.lat, lastPosition.lon) > 2;
+        if (!moved) return;
+        lastPosition = { lat, lon };
+
+        socket.emit('updateLocation', { id: userId, lat, lon, accuracy });
+      }, err => console.log("Location error:", err), { enableHighAccuracy: true });
+    }, 1000);
   } else {
-    markers[id].setLatLng([lat, lon]);
+    alert("Geolocation not supported.");
   }
 
-  markers[id].bindPopup(`${id}<br>📍 ${inside ? '✅ Inside' : '❌ Outside'}<br>📏 ${distance.toFixed(1)} m`);
+  // --- RECEIVE OTHER USERS' LOCATIONS ---
+  socket.on('userLocationUpdate', data => {
+    const { id, lat, lon, accuracy } = data;
+    const distance = getDistance(lat, lon, geofenceCenter[0], geofenceCenter[1]);
+    const inside = distance <= geofenceRadius;
 
-  // Update status if this is you
-  if (id === userId) {
-    const status = document.getElementById('status');
-    status.innerHTML = inside
-      ? `✅ Inside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`
-      : `❌ Outside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`;
-    status.style.background = inside ? "#a7f3d0" : "#fecaca";
-  }
-});
+    if (!markers[id]) {
+      markers[id] = L.marker([lat, lon]).addTo(map);
+    } else {
+      markers[id].setLatLng([lat, lon]);
+    }
 
-// --- REMOVE MARKER WHEN USER DISCONNECTS ---
-socket.on('userDisconnected', id => {
-  if (markers[id]) {
-    map.removeLayer(markers[id]);
-    delete markers[id];
-  }
-});
+    markers[id].bindPopup(`${id}<br>📍 ${inside ? '✅ Inside' : '❌ Outside'}<br>📏 ${distance.toFixed(1)} m`);
+
+    if (id === userId) {
+      const status = document.getElementById('status');
+      status.innerHTML = inside
+        ? `✅ Inside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`
+        : `❌ Outside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`;
+      status.style.background = inside ? "#a7f3d0" : "#fecaca";
+    }
+  });
+
+  // --- REMOVE MARKER WHEN USER DISCONNECTS ---
+  socket.on('userDisconnected', id => {
+    if (markers[id]) {
+      map.removeLayer(markers[id]);
+      delete markers[id];
+    }
+  });
+}
 </script>
 </body>
 </html>
