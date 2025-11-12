@@ -2,10 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Multi-User Geofence Tracker</title>
+  <title>EAC Manila Multi-User Geofence</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <style>
     #map { height: 100vh; width: 100%; display: none; }
     .status {
@@ -49,13 +50,9 @@ let userId = null;
 
 document.getElementById('startBtn').addEventListener('click', () => {
   const input = document.getElementById('usernameInput').value.trim();
-  if (!input) {
-    alert("Please enter a username!");
-    return;
-  }
+  if (!input) { alert("Please enter a username!"); return; }
   userId = input;
 
-  // Hide form and show map
   document.getElementById('usernameForm').style.display = 'none';
   document.getElementById('map').style.display = 'block';
 
@@ -63,40 +60,32 @@ document.getElementById('startBtn').addEventListener('click', () => {
 });
 
 function initMap() {
-  // --- CONFIGURATION ---
-  const geofenceCenter = [14.380439456531477, 120.87314190182668];
-  const geofenceRadius = 100; // meters
+  // --- EAC 8-point polygon geofence ---
+  const eacPolygon = [
+    [14.582820, 120.986910],
+    [14.582820, 120.987050],
+    [14.582790, 120.987120],
+    [14.582740, 120.987150],
+    [14.582700, 120.987140],
+    [14.582680, 120.987070],
+    [14.582690, 120.986950],
+    [14.582740, 120.986910],
+    [14.582820, 120.986910]
+  ];
 
   // --- MAP INITIALIZATION ---
-  const map = L.map('map').setView(geofenceCenter, 17);
+  const mapCenter = [14.582750, 120.987030];
+  const map = L.map('map').setView(mapCenter, 18);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 80 }).addTo(map);
 
-  // Draw geofence
-  const circle = L.circle(geofenceCenter, {
-    radius: geofenceRadius,
-    color: 'blue',
-    fillColor: '#3f83f8',
-    fillOpacity: 0.3
-  }).addTo(map);
-  L.marker(geofenceCenter).addTo(map).bindPopup("Geofence Center");
+  // Draw polygon on map
+  L.polygon(eacPolygon, { color: 'blue', fillColor: '#3f83f8', fillOpacity: 0.3 }).addTo(map);
 
   // --- SOCKET CONNECTION ---
   const socket = io();
   const markers = {};
 
-  // --- HELPER FUNCTION: Haversine Distance ---
-  function getDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371e3;
-    const φ1 = lat1 * Math.PI/180;
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2 - lat1) * Math.PI/180;
-    const Δλ = (lon2 - lon1) * Math.PI/180;
-    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-  }
-
-  // --- USER POSITION TRACKING ---
+  // --- USER GEOLOCATION WATCH ---
   let lastPosition = null;
   if (navigator.geolocation) {
     setInterval(() => {
@@ -105,8 +94,11 @@ function initMap() {
         const lon = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
 
-        const moved = !lastPosition || getDistance(lat, lon, lastPosition.lat, lastPosition.lon) > 2;
-        if (!moved) return;
+        // Reduce GPS jitter: ignore tiny movements < 2m
+        if (lastPosition) {
+          const distanceMoved = turf.distance(turf.point([lastPosition.lon, lastPosition.lat]), turf.point([lon, lat]), { units: 'meters' });
+          if (distanceMoved < 2) return;
+        }
         lastPosition = { lat, lon };
 
         socket.emit('updateLocation', { id: userId, lat, lon, accuracy });
@@ -119,8 +111,12 @@ function initMap() {
   // --- RECEIVE OTHER USERS' LOCATIONS ---
   socket.on('userLocationUpdate', data => {
     const { id, lat, lon, accuracy } = data;
-    const distance = getDistance(lat, lon, geofenceCenter[0], geofenceCenter[1]);
-    const inside = distance <= geofenceRadius;
+
+    // Convert polygon coordinates for Turf.js [lon, lat]
+    const polyCoords = eacPolygon.map(([lat, lon]) => [lon, lat]);
+    const pt = turf.point([lon, lat]);
+    const poly = turf.polygon([polyCoords]);
+    const inside = turf.booleanPointInPolygon(pt, poly);
 
     if (!markers[id]) {
       markers[id] = L.marker([lat, lon]).addTo(map);
@@ -128,13 +124,13 @@ function initMap() {
       markers[id].setLatLng([lat, lon]);
     }
 
-    markers[id].bindPopup(`${id}<br>📍 ${inside ? '✅ Inside' : '❌ Outside'}<br>📏 ${distance.toFixed(1)} m`);
+    markers[id].bindPopup(`${id}<br>📍 ${inside ? '✅ Inside' : '❌ Outside'}<br>📏 ${inside ? 'Within polygon' : 'Outside polygon'}`);
 
     if (id === userId) {
       const status = document.getElementById('status');
       status.innerHTML = inside
-        ? `✅ Inside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`
-        : `❌ Outside Geofence<br>Distance: ${distance.toFixed(1)} m<br>Accuracy: ${accuracy.toFixed(1)} m`;
+        ? `✅ Inside EAC Polygon<br>Accuracy: ${accuracy.toFixed(1)} m`
+        : `❌ Outside EAC Polygon<br>Accuracy: ${accuracy.toFixed(1)} m`;
       status.style.background = inside ? "#a7f3d0" : "#fecaca";
     }
   });
@@ -148,5 +144,6 @@ function initMap() {
   });
 }
 </script>
+
 </body>
 </html>
