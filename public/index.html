@@ -31,7 +31,7 @@ const userId = "User-" + Math.floor(Math.random() * 10000);
 
 // --- MAP INITIALIZATION ---
 const map = L.map('map').setView(geofenceCenter, 17);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 80 }).addTo(map);
 
 // Draw geofence
 const circle = L.circle(geofenceCenter, {
@@ -58,23 +58,25 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// --- GEOLOCATION WATCH ---
+// --- USER POSITION TRACKING ---
+let lastPosition = null;
+
+// Poll GPS every second
 if (navigator.geolocation) {
-  navigator.geolocation.watchPosition(pos => {
-    const lat = pos.coords.latitude;
-    const lon = pos.coords.longitude;
-    const accuracy = pos.coords.accuracy;
+  setInterval(() => {
+    navigator.geolocation.getCurrentPosition(pos => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const accuracy = pos.coords.accuracy;
 
-    // Send current location to server
-    socket.emit('updateLocation', {
-      id: userId,
-      lat: lat,
-      lon: lon,
-      accuracy: accuracy
-    });
+      // Send update only if moved > 2 meters
+      const moved = !lastPosition || getDistance(lat, lon, lastPosition.lat, lastPosition.lon) > 2;
+      if (!moved) return;
+      lastPosition = { lat, lon };
 
-  }, err => alert("Location error: " + err.message),
-  { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 });
+      socket.emit('updateLocation', { id: userId, lat, lon, accuracy });
+    }, err => console.log("Location error:", err), { enableHighAccuracy: true });
+  }, 1000); // every 1 second
 } else {
   alert("Geolocation not supported.");
 }
@@ -82,22 +84,19 @@ if (navigator.geolocation) {
 // --- RECEIVE OTHER USERS' LOCATIONS ---
 socket.on('userLocationUpdate', data => {
   const { id, lat, lon, accuracy } = data;
-
-  // Calculate inside/outside
   const distance = getDistance(lat, lon, geofenceCenter[0], geofenceCenter[1]);
   const inside = distance <= geofenceRadius;
 
-  // Add or update marker
+  // Smooth marker movement
   if (!markers[id]) {
     markers[id] = L.marker([lat, lon]).addTo(map);
   } else {
     markers[id].setLatLng([lat, lon]);
   }
 
-  // Popup text
   markers[id].bindPopup(`${id}<br>📍 ${inside ? '✅ Inside' : '❌ Outside'}<br>📏 ${distance.toFixed(1)} m`);
-  
-  // If this is you, update status
+
+  // Update status if this is you
   if (id === userId) {
     const status = document.getElementById('status');
     status.innerHTML = inside
